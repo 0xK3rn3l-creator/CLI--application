@@ -1,64 +1,57 @@
 import sys
-import os
-import requests
+from github_client import fetch_repo_context, fetch_pr_diff
+from ai_analyzer import analyze_codebase, analyze_pull_request
+from reporter import save_reports, save_pr_review
 
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+def print_usage():
+    print("=" * 60)
+    print("  AI Repository Analyzer & PR Reviewer")
+    print("=" * 60)
+    print("Mode 1: Full Repository Analysis (Standard Task)")
+    print("  python3 cli.py <owner/repository> [branch_name]")
+    print("\nMode 2: Automated PR Review Report (Bonus Task)")
+    print("  python3 cli.py <owner/repository> --pr <pr_number>")
+    print("=" * 60)
 
-def fetch_contents(owner, repo_name, current_path="", branch=None):
-    url = f"https://api.github.com/repos/{owner}/{repo_name}/contents/{current_path}"
-    if branch:
-        url += f"?ref={branch}"
-    
-    headers = {
-        "Accept": "application/vnd.github+json"
-    }
-    
-    if GITHUB_TOKEN:
-        headers["Authorization"] = f"token {GITHUB_TOKEN}"
-        
-    response = requests.get(url, headers=headers)
-    
-    if response.status_code != 200:
-        print(f"\n[DEBUG] API Error! Status code: {response.status_code}")
-        print(f"[DEBUG] Server response: {response.text}")
-        sys.exit(1)
-        
-    items = response.json()
-    if not isinstance(items, list):
-        items = [items]
-        
-    for item in items:
-        if item["type"] == "dir":
-            if item["name"] == ".git":
-                continue
-            # Recursive traversal for nested subdirectories
-            fetch_contents(owner, repo_name, item["path"], branch)
-        else:
-            print(item["path"])
-
-def list_repo_files(repo_path, branch=None):
-    if not repo_path:
-        print(f"Error: Path '{repo_path}' does not exist.")
-        sys.exit(1)
-
-    if "/" not in repo_path:
-        print(f"Error: '{repo_path}' is not a valid target format (owner/repo).")
-        sys.exit(1)
-    
-    if branch:
-        print(f"--- Repository files: {repo_path} (branch: {branch}) ---")
-    else:
-        print(f"--- Repository files: {repo_path} (default branch) ---")
-    
-    owner, repo_name = repo_path.split("/", 1)
-    fetch_contents(owner, repo_name, branch=branch)
-
-if __name__ == "__main__":
+def main():
     if len(sys.argv) < 2:
-        print("Usage: python3 cli.py <owner/repository> [branch_name]")
+        print_usage()
         sys.exit(1)
 
     target_path = sys.argv[1]
-    target_branch = sys.argv[2] if len(sys.argv) > 2 else None
-    
-    list_repo_files(target_path, branch=target_branch)
+    if "/" not in target_path:
+        print(f"[ERROR] '{target_path}' is not a valid repository format. Use 'owner/repo'.")
+        sys.exit(1)
+        
+    owner, repo_name = target_path.split("/", 1)
+
+    # Detect Bonus PR review mode
+    if len(sys.argv) == 4 and sys.argv[2] == "--pr":
+        pr_number = sys.argv[3]
+        print(f"[*] [BONUS] Fetching Pull Request #{pr_number} diff for {target_path}...")
+        diff_text = fetch_pr_diff(owner, repo_name, pr_number)
+        
+        print("[*] Sending PR diff to Gemini LLM for automated review...")
+        review_data = analyze_pull_request(diff_text)
+        
+        print("[*] Saving automated PR review report...")
+        save_pr_review(review_data)
+        print("[SUCCESS] PR Review complete! Output saved to 'output/pr_review.md'.")
+        
+    else:
+        # Full repository analysis mode
+        target_branch = sys.argv[2] if len(sys.argv) > 2 else None
+        
+        print(f"[*] Fetching repository context for {target_path}...")
+        files, contents = fetch_repo_context(owner, repo_name, branch=target_branch)
+        print(f"[+] Discovered {len(files)} files. Read contents for {len(contents)} source files.")
+
+        print("[*] Analyzing codebase with Gemini LLM...")
+        analysis = analyze_codebase(files, contents)
+
+        print("[*] Saving final analysis reports...")
+        save_reports(analysis)
+        print("[SUCCESS] Full Analysis complete! Main report saved to 'output/report.md'.")
+
+if __name__ == "__main__":
+    main()
